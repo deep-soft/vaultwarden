@@ -6,8 +6,8 @@ on:
         required: false
         default: ""
 
-  schedule:
-    - cron: '0 1 * * FRI'
+#  schedule:
+#    - cron: '0 1 * * FRI'
 
 name: Cleanup
 jobs:
