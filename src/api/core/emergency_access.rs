@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{
     api::{
         core::{CipherSyncData, CipherSyncType},
-        EmptyResult, JsonResult, JsonUpcase,
+        EmptyResult, JsonResult,
     },
     auth::{decode_emergency_access_invite, Headers},
     db::{models::*, DbConn, DbPool},
@@ -43,31 +43,33 @@ pub fn routes() -> Vec<Route> {
 async fn get_contacts(headers: Headers, mut conn: DbConn) -> Json<Value> {
     if !CONFIG.emergency_access_allowed() {
         return Json(json!({
-            "Data": [{
-                "Id": "",
-                "Status": 2,
-                "Type": 0,
-                "WaitTimeDays": 0,
-                "GranteeId": "",
-                "Email": "",
-                "Name": "NOTE: Emergency Access is disabled!",
-                "Object": "emergencyAccessGranteeDetails",
+            "data": [{
+                "id": "",
+                "status": 2,
+                "type": 0,
+                "waitTimeDays": 0,
+                "granteeId": "",
+                "email": "",
+                "name": "NOTE: Emergency Access is disabled!",
+                "object": "emergencyAccessGranteeDetails",
 
             }],
-            "Object": "list",
-            "ContinuationToken": null
+            "object": "list",
+            "continuationToken": null
         }));
     }
     let emergency_access_list = EmergencyAccess::find_all_by_grantor_uuid(&headers.user.uuid, &mut conn).await;
     let mut emergency_access_list_json = Vec::with_capacity(emergency_access_list.len());
     for ea in emergency_access_list {
-        emergency_access_list_json.push(ea.to_json_grantee_details(&mut conn).await);
+        if let Some(grantee) = ea.to_json_grantee_details(&mut conn).await {
+            emergency_access_list_json.push(grantee)
+        }
     }
 
     Json(json!({
-      "Data": emergency_access_list_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": emergency_access_list_json,
+      "object": "list",
+      "continuationToken": null
     }))
 }
 
@@ -84,9 +86,9 @@ async fn get_grantees(headers: Headers, mut conn: DbConn) -> Json<Value> {
     }
 
     Json(json!({
-      "Data": emergency_access_list_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": emergency_access_list_json,
+      "object": "list",
+      "continuationToken": null
     }))
 }
 
@@ -95,7 +97,9 @@ async fn get_emergency_access(emer_id: &str, mut conn: DbConn) -> JsonResult {
     check_emergency_access_enabled()?;
 
     match EmergencyAccess::find_by_uuid(emer_id, &mut conn).await {
-        Some(emergency_access) => Ok(Json(emergency_access.to_json_grantee_details(&mut conn).await)),
+        Some(emergency_access) => Ok(Json(
+            emergency_access.to_json_grantee_details(&mut conn).await.expect("Grantee user should exist but does not!"),
+        )),
         None => err!("Emergency access not valid."),
     }
 }
@@ -105,42 +109,38 @@ async fn get_emergency_access(emer_id: &str, mut conn: DbConn) -> JsonResult {
 // region put/post
 
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct EmergencyAccessUpdateData {
-    Type: NumberOrString,
-    WaitTimeDays: i32,
-    KeyEncrypted: Option<String>,
+    r#type: NumberOrString,
+    wait_time_days: i32,
+    key_encrypted: Option<String>,
 }
 
 #[put("/emergency-access/<emer_id>", data = "<data>")]
-async fn put_emergency_access(emer_id: &str, data: JsonUpcase<EmergencyAccessUpdateData>, conn: DbConn) -> JsonResult {
+async fn put_emergency_access(emer_id: &str, data: Json<EmergencyAccessUpdateData>, conn: DbConn) -> JsonResult {
     post_emergency_access(emer_id, data, conn).await
 }
 
 #[post("/emergency-access/<emer_id>", data = "<data>")]
-async fn post_emergency_access(
-    emer_id: &str,
-    data: JsonUpcase<EmergencyAccessUpdateData>,
-    mut conn: DbConn,
-) -> JsonResult {
+async fn post_emergency_access(emer_id: &str, data: Json<EmergencyAccessUpdateData>, mut conn: DbConn) -> JsonResult {
     check_emergency_access_enabled()?;
 
-    let data: EmergencyAccessUpdateData = data.into_inner().data;
+    let data: EmergencyAccessUpdateData = data.into_inner();
 
     let mut emergency_access = match EmergencyAccess::find_by_uuid(emer_id, &mut conn).await {
         Some(emergency_access) => emergency_access,
         None => err!("Emergency access not valid."),
     };
 
-    let new_type = match EmergencyAccessType::from_str(&data.Type.into_string()) {
+    let new_type = match EmergencyAccessType::from_str(&data.r#type.into_string()) {
         Some(new_type) => new_type as i32,
         None => err!("Invalid emergency access type."),
     };
 
     emergency_access.atype = new_type;
-    emergency_access.wait_time_days = data.WaitTimeDays;
-    if data.KeyEncrypted.is_some() {
-        emergency_access.key_encrypted = data.KeyEncrypted;
+    emergency_access.wait_time_days = data.wait_time_days;
+    if data.key_encrypted.is_some() {
+        emergency_access.key_encrypted = data.key_encrypted;
     }
 
     emergency_access.save(&mut conn).await?;
@@ -180,24 +180,24 @@ async fn post_delete_emergency_access(emer_id: &str, headers: Headers, conn: DbC
 // region invite
 
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct EmergencyAccessInviteData {
-    Email: String,
-    Type: NumberOrString,
-    WaitTimeDays: i32,
+    email: String,
+    r#type: NumberOrString,
+    wait_time_days: i32,
 }
 
 #[post("/emergency-access/invite", data = "<data>")]
-async fn send_invite(data: JsonUpcase<EmergencyAccessInviteData>, headers: Headers, mut conn: DbConn) -> EmptyResult {
+async fn send_invite(data: Json<EmergencyAccessInviteData>, headers: Headers, mut conn: DbConn) -> EmptyResult {
     check_emergency_access_enabled()?;
 
-    let data: EmergencyAccessInviteData = data.into_inner().data;
-    let email = data.Email.to_lowercase();
-    let wait_time_days = data.WaitTimeDays;
+    let data: EmergencyAccessInviteData = data.into_inner();
+    let email = data.email.to_lowercase();
+    let wait_time_days = data.wait_time_days;
 
     let emergency_access_status = EmergencyAccessStatus::Invited as i32;
 
-    let new_type = match EmergencyAccessType::from_str(&data.Type.into_string()) {
+    let new_type = match EmergencyAccessType::from_str(&data.r#type.into_string()) {
         Some(new_type) => new_type as i32,
         None => err!("Invalid emergency access type."),
     };
@@ -209,7 +209,7 @@ async fn send_invite(data: JsonUpcase<EmergencyAccessInviteData>, headers: Heade
         err!("You can not set yourself as an emergency contact.")
     }
 
-    let grantee_user = match User::find_by_mail(&email, &mut conn).await {
+    let (grantee_user, new_user) = match User::find_by_mail(&email, &mut conn).await {
         None => {
             if !CONFIG.invitations_allowed() {
                 err!(format!("Grantee user does not exist: {}", &email))
@@ -226,9 +226,10 @@ async fn send_invite(data: JsonUpcase<EmergencyAccessInviteData>, headers: Heade
 
             let mut user = User::new(email.clone());
             user.save(&mut conn).await?;
-            user
+            (user, true)
         }
-        Some(user) => user,
+        Some(user) if user.password_hash.is_empty() => (user, true),
+        Some(user) => (user, false),
     };
 
     if EmergencyAccess::find_by_grantor_uuid_and_grantee_uuid_or_email(
@@ -256,15 +257,9 @@ async fn send_invite(data: JsonUpcase<EmergencyAccessInviteData>, headers: Heade
             &grantor_user.email,
         )
         .await?;
-    } else {
-        // Automatically mark user as accepted if no email invites
-        match User::find_by_mail(&email, &mut conn).await {
-            Some(user) => match accept_invite_process(&user.uuid, &mut new_emergency_access, &email, &mut conn).await {
-                Ok(v) => v,
-                Err(e) => err!(e.to_string()),
-            },
-            None => err!("Grantee user not found."),
-        }
+    } else if !new_user {
+        // if mail is not enabled immediately accept the invitation for existing users
+        new_emergency_access.accept_invite(&grantee_user.uuid, &email, &mut conn).await?;
     }
 
     Ok(())
@@ -308,34 +303,29 @@ async fn resend_invite(emer_id: &str, headers: Headers, mut conn: DbConn) -> Emp
             &grantor_user.email,
         )
         .await?;
-    } else {
-        if Invitation::find_by_mail(&email, &mut conn).await.is_none() {
-            let invitation = Invitation::new(&email);
-            invitation.save(&mut conn).await?;
-        }
-
-        // Automatically mark user as accepted if no email invites
-        match accept_invite_process(&grantee_user.uuid, &mut emergency_access, &email, &mut conn).await {
-            Ok(v) => v,
-            Err(e) => err!(e.to_string()),
-        }
+    } else if !grantee_user.password_hash.is_empty() {
+        // accept the invitation for existing user
+        emergency_access.accept_invite(&grantee_user.uuid, &email, &mut conn).await?;
+    } else if CONFIG.invitations_allowed() && Invitation::find_by_mail(&email, &mut conn).await.is_none() {
+        let invitation = Invitation::new(&email);
+        invitation.save(&mut conn).await?;
     }
 
     Ok(())
 }
 
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct AcceptData {
-    Token: String,
+    token: String,
 }
 
 #[post("/emergency-access/<emer_id>/accept", data = "<data>")]
-async fn accept_invite(emer_id: &str, data: JsonUpcase<AcceptData>, headers: Headers, mut conn: DbConn) -> EmptyResult {
+async fn accept_invite(emer_id: &str, data: Json<AcceptData>, headers: Headers, mut conn: DbConn) -> EmptyResult {
     check_emergency_access_enabled()?;
 
-    let data: AcceptData = data.into_inner().data;
-    let token = &data.Token;
+    let data: AcceptData = data.into_inner();
+    let token = &data.token;
     let claims = decode_emergency_access_invite(token)?;
 
     // This can happen if the user who received the invite used a different email to signup.
@@ -367,10 +357,7 @@ async fn accept_invite(emer_id: &str, data: JsonUpcase<AcceptData>, headers: Hea
         && grantor_user.name == claims.grantor_name
         && grantor_user.email == claims.grantor_email
     {
-        match accept_invite_process(&grantee_user.uuid, &mut emergency_access, &grantee_user.email, &mut conn).await {
-            Ok(v) => v,
-            Err(e) => err!(e.to_string()),
-        }
+        emergency_access.accept_invite(&grantee_user.uuid, &grantee_user.email, &mut conn).await?;
 
         if CONFIG.mail_enabled() {
             mail::send_emergency_access_invite_accepted(&grantor_user.email, &grantee_user.email).await?;
@@ -382,44 +369,24 @@ async fn accept_invite(emer_id: &str, data: JsonUpcase<AcceptData>, headers: Hea
     }
 }
 
-async fn accept_invite_process(
-    grantee_uuid: &str,
-    emergency_access: &mut EmergencyAccess,
-    grantee_email: &str,
-    conn: &mut DbConn,
-) -> EmptyResult {
-    if emergency_access.email.is_none() || emergency_access.email.as_ref().unwrap() != grantee_email {
-        err!("User email does not match invite.");
-    }
-
-    if emergency_access.status == EmergencyAccessStatus::Accepted as i32 {
-        err!("Emergency contact already accepted.");
-    }
-
-    emergency_access.status = EmergencyAccessStatus::Accepted as i32;
-    emergency_access.grantee_uuid = Some(String::from(grantee_uuid));
-    emergency_access.email = None;
-    emergency_access.save(conn).await
-}
-
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct ConfirmData {
-    Key: String,
+    key: String,
 }
 
 #[post("/emergency-access/<emer_id>/confirm", data = "<data>")]
 async fn confirm_emergency_access(
     emer_id: &str,
-    data: JsonUpcase<ConfirmData>,
+    data: Json<ConfirmData>,
     headers: Headers,
     mut conn: DbConn,
 ) -> JsonResult {
     check_emergency_access_enabled()?;
 
     let confirming_user = headers.user;
-    let data: ConfirmData = data.into_inner().data;
-    let key = data.Key;
+    let data: ConfirmData = data.into_inner();
+    let key = data.key;
 
     let mut emergency_access = match EmergencyAccess::find_by_uuid(emer_id, &mut conn).await {
         Some(emer) => emer,
@@ -614,9 +581,9 @@ async fn view_emergency_access(emer_id: &str, headers: Headers, mut conn: DbConn
     }
 
     Ok(Json(json!({
-      "Ciphers": ciphers_json,
-      "KeyEncrypted": &emergency_access.key_encrypted,
-      "Object": "emergencyAccessView",
+      "ciphers": ciphers_json,
+      "keyEncrypted": &emergency_access.key_encrypted,
+      "object": "emergencyAccessView",
     })))
 }
 
@@ -640,35 +607,35 @@ async fn takeover_emergency_access(emer_id: &str, headers: Headers, mut conn: Db
     };
 
     let result = json!({
-        "Kdf": grantor_user.client_kdf_type,
-        "KdfIterations": grantor_user.client_kdf_iter,
-        "KdfMemory": grantor_user.client_kdf_memory,
-        "KdfParallelism": grantor_user.client_kdf_parallelism,
-        "KeyEncrypted": &emergency_access.key_encrypted,
-        "Object": "emergencyAccessTakeover",
+        "kdf": grantor_user.client_kdf_type,
+        "kdfIterations": grantor_user.client_kdf_iter,
+        "kdfMemory": grantor_user.client_kdf_memory,
+        "kdfParallelism": grantor_user.client_kdf_parallelism,
+        "keyEncrypted": &emergency_access.key_encrypted,
+        "object": "emergencyAccessTakeover",
     });
 
     Ok(Json(result))
 }
 
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct EmergencyAccessPasswordData {
-    NewMasterPasswordHash: String,
-    Key: String,
+    new_master_password_hash: String,
+    key: String,
 }
 
 #[post("/emergency-access/<emer_id>/password", data = "<data>")]
 async fn password_emergency_access(
     emer_id: &str,
-    data: JsonUpcase<EmergencyAccessPasswordData>,
+    data: Json<EmergencyAccessPasswordData>,
     headers: Headers,
     mut conn: DbConn,
 ) -> EmptyResult {
     check_emergency_access_enabled()?;
 
-    let data: EmergencyAccessPasswordData = data.into_inner().data;
-    let new_master_password_hash = &data.NewMasterPasswordHash;
+    let data: EmergencyAccessPasswordData = data.into_inner();
+    let new_master_password_hash = &data.new_master_password_hash;
     //let key = &data.Key;
 
     let requesting_user = headers.user;
@@ -687,7 +654,7 @@ async fn password_emergency_access(
     };
 
     // change grantor_user password
-    grantor_user.set_password(new_master_password_hash, Some(data.Key), true, None);
+    grantor_user.set_password(new_master_password_hash, Some(data.key), true, None);
     grantor_user.save(&mut conn).await?;
 
     // Disable TwoFactor providers since they will otherwise block logins
@@ -725,9 +692,9 @@ async fn policies_emergency_access(emer_id: &str, headers: Headers, mut conn: Db
     let policies_json: Vec<Value> = policies.await.iter().map(OrgPolicy::to_json).collect();
 
     Ok(Json(json!({
-        "Data": policies_json,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": policies_json,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 

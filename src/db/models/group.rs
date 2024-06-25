@@ -58,14 +58,14 @@ impl Group {
         use crate::util::format_date;
 
         json!({
-            "Id": self.uuid,
-            "OrganizationId": self.organizations_uuid,
-            "Name": self.name,
-            "AccessAll": self.access_all,
-            "ExternalId": self.external_id,
-            "CreationDate": format_date(&self.creation_date),
-            "RevisionDate": format_date(&self.revision_date),
-            "Object": "group"
+            "id": self.uuid,
+            "organizationId": self.organizations_uuid,
+            "name": self.name,
+            "accessAll": self.access_all,
+            "externalId": self.external_id,
+            "creationDate": format_date(&self.creation_date),
+            "revisionDate": format_date(&self.revision_date),
+            "object": "group"
         })
     }
 
@@ -75,21 +75,21 @@ impl Group {
             .iter()
             .map(|entry| {
                 json!({
-                    "Id": entry.collections_uuid,
-                    "ReadOnly": entry.read_only,
-                    "HidePasswords": entry.hide_passwords
+                    "id": entry.collections_uuid,
+                    "readOnly": entry.read_only,
+                    "hidePasswords": entry.hide_passwords
                 })
             })
             .collect();
 
         json!({
-            "Id": self.uuid,
-            "OrganizationId": self.organizations_uuid,
-            "Name": self.name,
-            "AccessAll": self.access_all,
-            "ExternalId": self.external_id,
-            "Collections": collections_groups,
-            "Object": "groupDetails"
+            "id": self.uuid,
+            "organizationId": self.organizations_uuid,
+            "name": self.name,
+            "accessAll": self.access_all,
+            "externalId": self.external_id,
+            "collections": collections_groups,
+            "object": "groupDetails"
         })
     }
 
@@ -203,10 +203,11 @@ impl Group {
         }}
     }
 
-    pub async fn find_by_external_id(id: &str, conn: &mut DbConn) -> Option<Self> {
+    pub async fn find_by_external_id_and_org(external_id: &str, org_uuid: &str, conn: &mut DbConn) -> Option<Self> {
         db_run! { conn: {
             groups::table
-                .filter(groups::external_id.eq(id))
+                .filter(groups::external_id.eq(external_id))
+                .filter(groups::organizations_uuid.eq(org_uuid))
                 .first::<GroupDb>(conn)
                 .ok()
                 .from_db()

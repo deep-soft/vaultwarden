@@ -265,8 +265,8 @@ fn admin_page_login() -> ApiResult<Html<String>> {
     render_admin_login(None, None)
 }
 
-#[derive(Deserialize, Debug)]
-#[allow(non_snake_case)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InviteData {
     email: String,
 }
@@ -326,9 +326,9 @@ async fn get_users_json(_token: AdminToken, mut conn: DbConn) -> Json<Value> {
     let mut users_json = Vec::with_capacity(users.len());
     for u in users {
         let mut usr = u.to_json(&mut conn).await;
-        usr["UserEnabled"] = json!(u.enabled);
-        usr["CreatedAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
-        usr["LastActive"] = match u.last_active(&mut conn).await {
+        usr["userEnabled"] = json!(u.enabled);
+        usr["createdAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
+        usr["lastActive"] = match u.last_active(&mut conn).await {
             Some(dt) => json!(format_naive_datetime_local(&dt, DT_FMT)),
             None => json!(None::<String>),
         };
@@ -364,8 +364,8 @@ async fn users_overview(_token: AdminToken, mut conn: DbConn) -> ApiResult<Html<
 async fn get_user_by_mail_json(mail: &str, _token: AdminToken, mut conn: DbConn) -> JsonResult {
     if let Some(u) = User::find_by_mail(mail, &mut conn).await {
         let mut usr = u.to_json(&mut conn).await;
-        usr["UserEnabled"] = json!(u.enabled);
-        usr["CreatedAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
+        usr["userEnabled"] = json!(u.enabled);
+        usr["createdAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
         Ok(Json(usr))
     } else {
         err_code!("User doesn't exist", Status::NotFound.code);
@@ -376,8 +376,8 @@ async fn get_user_by_mail_json(mail: &str, _token: AdminToken, mut conn: DbConn)
 async fn get_user_json(uuid: &str, _token: AdminToken, mut conn: DbConn) -> JsonResult {
     let u = get_user_or_404(uuid, &mut conn).await?;
     let mut usr = u.to_json(&mut conn).await;
-    usr["UserEnabled"] = json!(u.enabled);
-    usr["CreatedAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
+    usr["userEnabled"] = json!(u.enabled);
+    usr["createdAt"] = json!(format_naive_datetime_local(&u.created_at, DT_FMT));
     Ok(Json(usr))
 }
 
@@ -475,7 +475,7 @@ async fn resend_user_invite(uuid: &str, _token: AdminToken, mut conn: DbConn) ->
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 struct UserOrgTypeData {
     user_type: NumberOrString,
     user_uuid: String,
@@ -701,10 +701,7 @@ async fn diagnostics(_token: AdminToken, ip_header: IpHeader, mut conn: DbConn) 
     let (latest_release, latest_commit, latest_web_build) =
         get_release_info(has_http_access, running_within_container).await;
 
-    let ip_header_name = match &ip_header.0 {
-        Some(h) => h,
-        _ => "",
-    };
+    let ip_header_name = &ip_header.0.unwrap_or_default();
 
     let diagnostics_json = json!({
         "dns_resolved": dns_resolved,
@@ -717,8 +714,8 @@ async fn diagnostics(_token: AdminToken, ip_header: IpHeader, mut conn: DbConn) 
         "running_within_container": running_within_container,
         "container_base_image": if running_within_container { container_base_image() } else { "Not applicable" },
         "has_http_access": has_http_access,
-        "ip_header_exists": &ip_header.0.is_some(),
-        "ip_header_match": ip_header_name == CONFIG.ip_header(),
+        "ip_header_exists": !ip_header_name.is_empty(),
+        "ip_header_match": ip_header_name.eq(&CONFIG.ip_header()),
         "ip_header_name": ip_header_name,
         "ip_header_config": &CONFIG.ip_header(),
         "uses_proxy": uses_proxy,
