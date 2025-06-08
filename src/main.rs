@@ -61,7 +61,7 @@ mod util;
 use crate::api::core::two_factor::duo_oidc::purge_duo_contexts;
 use crate::api::purge_auth_requests;
 use crate::api::{WS_ANONYMOUS_SUBSCRIPTIONS, WS_USERS};
-pub use config::CONFIG;
+pub use config::{PathType, CONFIG};
 pub use error::{Error, MapResult};
 use rocket::data::{Limits, ToByteUnit};
 use std::sync::{atomic::Ordering, Arc};
@@ -75,16 +75,13 @@ async fn main() -> Result<(), Error> {
     let level = init_logging()?;
 
     check_data_folder().await;
-    auth::initialize_keys().unwrap_or_else(|e| {
+    auth::initialize_keys().await.unwrap_or_else(|e| {
         error!("Error creating private key '{}'\n{e:?}\nExiting Vaultwarden!", CONFIG.private_rsa_key());
         exit(1);
     });
     check_web_vault();
 
-    create_dir(&CONFIG.icon_cache_folder(), "icon cache");
     create_dir(&CONFIG.tmp_folder(), "tmp folder");
-    create_dir(&CONFIG.sends_folder(), "sends folder");
-    create_dir(&CONFIG.attachments_folder(), "attachments folder");
 
     let pool = create_db_pool().await;
     schedule_jobs(pool.clone());
@@ -430,10 +427,7 @@ fn init_logging() -> Result<log::LevelFilter, Error> {
             }
             None => error!(
                 target: "panic",
-                "thread '{}' panicked at '{}'\n{:}",
-                thread,
-                msg,
-                backtrace
+                "thread '{thread}' panicked at '{msg}'\n{backtrace:}"
             ),
         }
     }));
@@ -453,7 +447,7 @@ fn chain_syslog(logger: fern::Dispatch) -> fern::Dispatch {
     match syslog::unix(syslog_fmt) {
         Ok(sl) => logger.chain(sl),
         Err(e) => {
-            error!("Unable to connect to syslog: {:?}", e);
+            error!("Unable to connect to syslog: {e:?}");
             logger
         }
     }
@@ -467,9 +461,27 @@ fn create_dir(path: &str, description: &str) {
 
 async fn check_data_folder() {
     let data_folder = &CONFIG.data_folder();
+
+    if data_folder.starts_with("s3://") {
+        if let Err(e) = CONFIG
+            .opendal_operator_for_path_type(PathType::Data)
+            .unwrap_or_else(|e| {
+                error!("Failed to create S3 operator for data folder '{data_folder}': {e:?}");
+                exit(1);
+            })
+            .check()
+            .await
+        {
+            error!("Could not access S3 data folder '{data_folder}': {e:?}");
+            exit(1);
+        }
+
+        return;
+    }
+
     let path = Path::new(data_folder);
     if !path.exists() {
-        error!("Data folder '{}' doesn't exist.", data_folder);
+        error!("Data folder '{data_folder}' doesn't exist.");
         if is_running_in_container() {
             error!("Verify that your data volume is mounted at the correct location.");
         } else {
@@ -478,7 +490,7 @@ async fn check_data_folder() {
         exit(1);
     }
     if !path.is_dir() {
-        error!("Data folder '{}' is not a directory.", data_folder);
+        error!("Data folder '{data_folder}' is not a directory.");
         exit(1);
     }
 
@@ -552,7 +564,7 @@ async fn create_db_pool() -> db::DbPool {
     match util::retry_db(db::DbPool::from_config, CONFIG.db_connection_retries()).await {
         Ok(p) => p,
         Err(e) => {
-            error!("Error creating database pool: {:?}", e);
+            error!("Error creating database pool: {e:?}");
             exit(1);
         }
     }
